@@ -100,8 +100,8 @@
  * A rate of 100 CPM means you'll get an average of 100 tocks per minute AT MINIMUM DISTANCE.
  * Note that cpm will fall off exponentially with increased distance.
  */
-#define LOW_CPM 60.0d    // Rate for button NOT pressed
-#define HIGH_CPM 500.0d   // Rate for button pressed (aka. "OMG we have radioactivity"-mode)
+#define LOW_CPM 100.0d    // Rate for button NOT pressed
+#define HIGH_CPM 1800.0d   // Rate for button pressed (aka. "OMG we have radioactivity"-mode)
 
 
 /**
@@ -173,10 +173,10 @@ void tock(){
 uint16_t nextDelay(long distance){
 
   // Calculate exponential falloff.
-  float distPct = pow((float)distance/(float)MIN_DISTANCE_CM,2.0);
+  float distPct = pow((float)MIN_DISTANCE_CM/(float)(distance/2.0 + MIN_DISTANCE_CM/2.0),2.0);
 
   // Count per minute decided by Button (Hi/Lo) multiplied by distance falloff.
-  double cpm = digitalRead(BUTTON_PIN)?LOW_CPM:HIGH_CPM * distPct;
+  double cpm = (digitalRead(BUTTON_PIN)?LOW_CPM:HIGH_CPM) * distPct;
 
   // Calculate poisson distributed random number for current cpm.
   // random number is cut a bit short of 0 and 1 in order to reduce extreme outliers.
