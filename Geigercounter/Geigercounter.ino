@@ -1,6 +1,6 @@
 /**
  * 
- * Geigercounter 0.9b
+ * Geigercounter 0.95b
  * by ShuzzDE
  * 
  * This sketch uses a HC-SR04 and a speaker connected to an arduino to simulate a Geiger Counter.
@@ -11,6 +11,8 @@
  * 
  * All these things are tuneable in the code, check the defines!
  * 
+ * 
+ * Uses the NewPing library by Tim Eckel for 
  * 
  */
 
@@ -28,8 +30,8 @@
 #define SPEAKER_PIN 1
 #define BUTTON_PIN 3
 #define ANALOG_PIN_FOR_RANDOM_SEED 5
-#define BUTTON_PULLUP LOW  // Set this to HIGH when not using Pin3 on Digispark.
-#undef DEBUG
+#define BUTTON_PULLUP LOW  // External pullup
+#undef DEBUG   // Disable Debugging
 #elif ARDUINO_AVR_NANO
 // Used Sepp's schematic to define the pin values.
 // However, the HC-SR04 isn't in the picture, yet.
@@ -41,8 +43,8 @@
 #define SPEAKER_PIN 10
 #define BUTTON_PIN 9
 #define ANALOG_PIN_FOR_RANDOM_SEED A1
-#define BUTTON_PULLUP HIGH
-#undef DEBUG
+#define BUTTON_PULLUP LOW  // External pullup, change to HIGH when removing ext.PU resistor
+#undef DEBUG   // Disable Debugging
 #else
 // Pin definitions for development Board (Arduino UNO in my case)
 #define TRIGGER_PIN 3
@@ -51,8 +53,8 @@
 #define SPEAKER_PIN 10
 #define BUTTON_PIN 12
 #define ANALOG_PIN_FOR_RANDOM_SEED A1
-#define BUTTON_PULLUP HIGH
-#define DEBUG   // when DEBUG is defined, code for serial output will be compiled.
+#define BUTTON_PULLUP HIGH  // Internal pullup
+#define DEBUG   // Enable Debugging
 #endif
 
 /*
@@ -76,25 +78,31 @@
 
 /*
  * Distance to object
- * At maximum distance, you will have the minimum tock rate
- * At minimum distance, you'll get the maximum tock rate
+ * 
+ * tock rates will fall off exponentially between minimum and maximum distances.
+ * This means that you'll get the defined LOW and HIGH rates at minimum distance only.
+ * Increase the distance and the tock rates will decrease exponentially.
+ * 
+ * Basically you can use this to tune the "sensitivity" of your device.
+ * 
+ * Keep in mind: 
+ * If MAX_DISTANCE_CM == 4 * MIN_DISTANCE_CM 
+ * then TOCK_RATE@MAX_DIST == 1/16 * TOCK_RATE@MIN_DIST
  */
 #define MAX_DISTANCE_CM 80   // Maximum distance acknowledged
-#define MIN_DISTANCE_CM 10   // Minimum distance to object acknowledged
+#define MIN_DISTANCE_CM 20   // Minimum distance to object
 
 /*
- * tock rates.
+ * Counts per Minute
  * Higher values mean faster tocks.
+ * 
+ * Example:
+ * A rate of 100 CPM means you'll get an average of 100 tocks per minute AT MINIMUM DISTANCE.
+ * Note that cpm will fall off exponentially with increased distance.
  */
-#define LOW_RATE 0.6    // Rate for button NOT pressed
-#define HIGH_RATE 5.0   // Rate for button pressed (aka. "OMG we have radioactivity"-mode)
+#define LOW_CPM 60.0d    // Rate for button NOT pressed
+#define HIGH_CPM 500.0d   // Rate for button pressed (aka. "OMG we have radioactivity"-mode)
 
-/*
- * Rate of tock rate change over the distance.
- * Lower values mean tocks will get faster at minimum distance compared to maximum distance
- */
-#define MIN_DIST_PCT_LOW   0.5    // Rate change for button NOT pressed
-#define MIN_DIST_PCT_HIGH  0.1    // Rate change for button pressed
 
 /**
  * Amount of time for which LED and speaker will be turned on.
@@ -123,7 +131,9 @@ void initRandom(){
   debugPrintln(seed);
 }
 
-
+/**
+ * Setup routine. The usual, pins, pullups, ...
+ */
 void setup() {
 
   debugSetup();  // Initializes Serial interface if DEBUG is defined.
@@ -135,46 +145,55 @@ void setup() {
   digitalWrite(LED_PIN, LOW);
 
   pinMode(BUTTON_PIN, INPUT);
-
   digitalWrite(BUTTON_PIN, BUTTON_PULLUP);
 
 
 }
 
-
+/**
+ * Generate a single tock on the speaker and flash the LED.
+ * Speaker and LED will be turned on for TOCK_LENGTH ms.
+ */
 void tock(){
-#if LED_PIN != SPEAKER_PIN  // if LED and SPEAKER pins differ, turn on speaker
   digitalWrite(SPEAKER_PIN, HIGH);
-#endif
   digitalWrite(LED_PIN, HIGH);
   delay(TOCK_LENGTH);
   digitalWrite(LED_PIN, LOW);
-#if LED_PIN != SPEAKER_PIN  // if LED and SPEAKER pins differ, turn off speaker
   digitalWrite(SPEAKER_PIN, LOW);
-#endif
 }
 
+
+
+/**
+ * Calculate a random, poisson-distributed delay until the next tock event.
+ * 
+ * Result is based on measured distance as well as configured CPM rates.
+ * The state of the button is included.
+ */
 uint16_t nextDelay(long distance){
 
-  // IDEA: Maybe we should also run the distance through some sort of log() function
-  // in order to make the change more noticeable/realistic when we get closer.
-  float distPct = ((float)distance - MIN_DISTANCE_CM) / (float)(MAX_DISTANCE_CM + 1);
+  // Calculate exponential falloff.
+  float distPct = pow((float)distance/(float)MIN_DISTANCE_CM,2.0);
 
-  if(digitalRead(BUTTON_PIN)){  // No debouncing necessary here, we can just use the momentary reading.
-    distPct = MIN_DIST_PCT_LOW + ((1.0 - MIN_DIST_PCT_LOW) * distPct);
-  } else {
-    distPct = MIN_DIST_PCT_HIGH + ((1.0 - MIN_DIST_PCT_HIGH) * distPct);
-  }
+  // Count per minute decided by Button (Hi/Lo) multiplied by distance falloff.
+  double cpm = digitalRead(BUTTON_PIN)?LOW_CPM:HIGH_CPM * distPct;
 
-  float nt = -log(((float)( random(9500) + 250 )/ 10001.0)) / digitalRead(BUTTON_PIN)?LOW_RATE:HIGH_RATE ;
+  // Calculate poisson distributed random number for current cpm.
+  // random number is cut a bit short of 0 and 1 in order to reduce extreme outliers.
+  // TODO: This might need a bit more tweaking.
+  // Result is a fraction of a minute since parameter is count per minute.
+  float nextTock = -log(((float)( random(9500) + 250 )/ 10001.0)) / cpm ;
 
-  uint16_t tockDelay = 1000 * nt * (distPct);
+  // nextTock is multiplied by 60000ms in order to get waiting time.
+  uint16_t tockDelay = 60000 * nextTock;
 
   debugPrint(distance);
   debugPrint("   ");
   debugPrint(distPct);
   debugPrint("   ");
-  debugPrint(nt);
+  debugPrint(cpm);
+  debugPrint("   ");
+  debugPrint(nextTock);
   debugPrint("   ");
   debugPrint(tockDelay);
 //  debugPrint("ms   ");
@@ -189,6 +208,8 @@ uint16_t nextDelay(long distance){
 
 
 long getPing(){
+
+  // Get reading from sensor.
   uint16_t distance = sonar.ping_cm(MAX_DISTANCE_CM);
 
   // Normalize reading
@@ -213,28 +234,23 @@ void loop() {
   long ts = millis();
 
   /*
-   * This while loop replaces the delay() that I used at first.
-   * Problem was that if you hit a very long delay and then moved the sensor closer to an object,
-   * the long delay would have to pass before the new "rate" would take hold, resulting in unrealistic behaviour.
-   * 
-   * This way, when you get closer to an object, the tick rate will increase. Feels more realistic to me.
-   * 
-   * However, this means that longer delays have a tendency to be artificially shortened due to ever-changing readings.
-   * I think it's not really noticeable, though...
+   * Keep checking the distance while waiting for the next tock.
+   * Reason is we don't want to keep delay()'ing when the device closes in on an object.
    */
   while(millis()-ts < tockDelay){
     long newDist = getPing();
     long diff = distance > newDist ? distance - newDist : newDist - distance;
-    if(diff > ((MAX_DISTANCE_CM - MIN_DISTANCE_CM)/10)){
-      debugPrint("! ");
+    if(diff > ((MAX_DISTANCE_CM - MIN_DISTANCE_CM)/10)){ // Difference bigger than 10% of max distance interval?
+      debugPrint("! ");  // Output ! so we can see the value was taken due to changes in distance in debug output.
       tockDelay = nextDelay(newDist);
       distance = newDist;
-    } 
+    }
+     
     if(millis() - ts + 50 < tockDelay){   // Wait for delay in 50ms steps.
       delay(50);  
     } else {
       long myDelay = tockDelay - (millis() - ts);
-      delay(myDelay < 0 ? 1 : myDelay);
+      delay(myDelay < 0 ? 0 : myDelay);
     }
   }
 
